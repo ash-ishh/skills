@@ -1,6 +1,6 @@
 # Skills
 
-A personal collection of Claude Code skills I use regularly.
+A personal collection of Claude Code skills for my workflows.
 
 ## Available Skills
 
@@ -10,8 +10,14 @@ A personal collection of Claude Code skills I use regularly.
 
 ## Installation
 
-Each skill is packaged as a `.skill` file. Install with:
+Install all skills from this repo:
 
+```bash
+npx skills add ash-ishh/skills
 ```
-/install-skill <skill-name>.skill
+
+Or install a specific skill:
+
+```bash
+npx skills add ash-ishh/skills@coda
 ```
