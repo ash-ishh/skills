@@ -6,9 +6,9 @@ A personal collection of Claude Code skills for my workflows.
 
 | Skill | Description |
 |-------|-------------|
-| [coda](./coda) | Export Coda document pages to local Markdown files |
-| [url-to-markdown](./url-to-markdown) | Convert web pages to clean markdown files |
-| [uv](./uv) | Prefer `uv` over pip/python/venv for scripts and Python projects |
+| [coda](./coda) | Export Coda document pages to local Markdown files ([README](./coda/README.md)) |
+| [url-to-markdown](./url-to-markdown) | Convert web pages to clean markdown files ([README](./url-to-markdown/README.md)) |
+| [uv](./uv) | Prefer `uv` over pip/python/venv for scripts and Python projects ([README](./uv/README.md)) |
 
 ## Installation
 
