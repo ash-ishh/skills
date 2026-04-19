@@ -382,6 +382,19 @@ def _export_pages(
         print(f"[{idx}/{len(order)}] {file_path}")
 
     active_ids = set(order)
+    stale_entries = {
+        pid: entry
+        for pid, entry in index.get("pages", {}).items()
+        if pid not in active_ids
+    }
+    for entry in stale_entries.values():
+        stale_path = entry.get("path")
+        if not stale_path:
+            continue
+        stale_file = out_dir / stale_path
+        if stale_file.exists() and stale_file.is_file():
+            stale_file.unlink()
+
     index["pages"] = {
         pid: entry
         for pid, entry in index.get("pages", {}).items()

@@ -59,12 +59,15 @@ export CODA_API_TOKEN="your-api-token"
 
 - Tables are not exported by the API into the generated Markdown files.
 - Checklists are not exported in the correct Markdown checklist format.
+- Images are not fetched and embedded into the exported Markdown files.
 
 ## Incremental updates
 
 - The exporter keeps a local index file named `.coda-export-index.json` inside the export directory.
 - On later runs, if the directory already exists, it compares each page's Coda `updatedAt` timestamp with the saved index.
 - Only new or updated pages are re-exported.
+- If a page was deleted in Coda, its local Markdown file is removed on the next sync and the index is updated.
+- If `.coda-export-index.json` is deleted, the next export is treated as a full refresh and the index is rebuilt.
 - Use `--overwrite` if you want to force a full rewrite.
 
 ## Notes

@@ -131,6 +131,8 @@ If the output directory already exists:
 - new pages are exported
 - pages updated in Coda after the last export are re-exported
 - unchanged pages are skipped
+- pages deleted in Coda should have their local Markdown files removed and their index entries deleted
+- if `.coda-export-index.json` is deleted, the next run is treated like a full refresh and the index is rebuilt
 
 To force a full rewrite:
 
