@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -28,6 +29,7 @@ from urllib.request import Request, urlopen
 
 
 BASE_URL = "https://coda.io/apis/v1"
+INDEX_FILE_NAME = ".coda-export-index.json"
 
 
 def parse_args() -> argparse.Namespace:
@@ -233,10 +235,45 @@ def fetch_page_content(
     return data.get("items", [])
 
 
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def load_index(index_path: Path) -> dict[str, Any]:
+    if not index_path.exists():
+        return {"pages": {}}
+    try:
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"pages": {}}
+    if not isinstance(data, dict):
+        return {"pages": {}}
+    data.setdefault("pages", {})
+    return data
+
+
+def save_index(index_path: Path, data: dict[str, Any]) -> None:
+    index_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def page_output_path(
+    out_dir: Path,
+    page_id: str,
+    page_name: str,
+    parent_map: dict[str, str | None],
+    page_by_id: dict[str, dict[str, Any]],
+) -> Path:
+    lineage = page_lineage(page_id=page_id, parent_map=parent_map)
+    page_dir = out_dir
+    for ancestor_id in lineage[:-1]:
+        ancestor_name = page_by_id.get(ancestor_id, {}).get("name", ancestor_id)
+        page_dir /= f"{sanitize_name(ancestor_name)} [{ancestor_id}]"
+    return page_dir / f"{sanitize_name(page_name)} [{page_id}].md"
+
+
 def _export_pages(
     doc_id: str,
     token: str,
-    pages: list[dict[str, Any]],
     order: list[str],
     parent_map: dict[str, str | None],
     page_by_id: dict[str, dict[str, Any]],
@@ -244,30 +281,57 @@ def _export_pages(
     overwrite: bool,
     timeout: int,
     retries: int,
+    scope: str,
+    root_page_id: str | None = None,
 ) -> tuple[int, int]:
     """Core export loop. Returns (written_count, skipped_count)."""
     out_dir.mkdir(parents=True, exist_ok=True)
+    index_path = out_dir / INDEX_FILE_NAME
+    index = load_index(index_path)
+    now = utc_now_iso()
+    index.update({
+        "docId": doc_id,
+        "scope": scope,
+        "rootPageId": root_page_id,
+        "updatedAt": now,
+    })
+
     written = 0
     skipped = 0
 
     for idx, page_id in enumerate(order, start=1):
         page = page_by_id.get(page_id, {})
         page_name = page.get("name") or page_id
+        file_path = page_output_path(
+            out_dir=out_dir,
+            page_id=page_id,
+            page_name=page_name,
+            parent_map=parent_map,
+            page_by_id=page_by_id,
+        )
+        file_path.parent.mkdir(parents=True, exist_ok=True)
 
-        lineage = page_lineage(page_id=page_id, parent_map=parent_map)
+        page_updated_at = page.get("updatedAt") or ""
+        browser_link = page.get("browserLink", "")
+        old_entry = index.get("pages", {}).get(page_id, {})
+        old_path = old_entry.get("path")
+        relative_path = str(file_path.relative_to(out_dir))
 
-        page_dir = out_dir
-        for ancestor_id in lineage[:-1]:
-            ancestor_name = page_by_id.get(ancestor_id, {}).get("name", ancestor_id)
-            page_dir /= f"{sanitize_name(ancestor_name)} [{ancestor_id}]"
-        page_dir.mkdir(parents=True, exist_ok=True)
-
-        file_path = page_dir / f"{sanitize_name(page_name)} [{page_id}].md"
-
-        if file_path.exists() and not overwrite:
-            print(f"[{idx}/{len(order)}] SKIP (exists) {file_path}")
+        unchanged = (
+            not overwrite
+            and file_path.exists()
+            and old_entry.get("updatedAt") == page_updated_at
+            and old_path == relative_path
+        )
+        if unchanged:
+            print(f"[{idx}/{len(order)}] SKIP (unchanged) {file_path}")
             skipped += 1
             continue
+
+        if old_path and old_path != relative_path:
+            old_file = out_dir / old_path
+            if old_file.exists() and old_file != file_path:
+                old_file.unlink()
 
         items = fetch_page_content(
             doc_id=doc_id,
@@ -302,14 +366,28 @@ def _export_pages(
         header = (
             f"# {page_name}\n\n"
             f"- Page ID: `{page_id}`\n"
-            f"- Browser Link: {page.get('browserLink', '')}\n"
+            f"- Browser Link: {browser_link}\n"
         )
         file_content = header + ("\n" + body if body else "\n")
 
         file_path.write_text(file_content, encoding="utf-8")
+        index.setdefault("pages", {})[page_id] = {
+            "name": page_name,
+            "path": relative_path,
+            "browserLink": browser_link,
+            "updatedAt": page_updated_at,
+            "exportedAt": now,
+        }
         written += 1
         print(f"[{idx}/{len(order)}] {file_path}")
 
+    active_ids = set(order)
+    index["pages"] = {
+        pid: entry
+        for pid, entry in index.get("pages", {}).items()
+        if pid in active_ids
+    }
+    save_index(index_path, index)
     return written, skipped
 
 
@@ -348,7 +426,6 @@ def export_subtree(args: argparse.Namespace, doc_id: str, token: str) -> None:
     written, skipped = _export_pages(
         doc_id=doc_id,
         token=token,
-        pages=pages,
         order=order,
         parent_map=parent,
         page_by_id=page_by_id,
@@ -356,6 +433,8 @@ def export_subtree(args: argparse.Namespace, doc_id: str, token: str) -> None:
         overwrite=args.overwrite,
         timeout=args.timeout,
         retries=args.retries,
+        scope="subtree",
+        root_page_id=root_page_id,
     )
 
     print(f"\nExport complete: {len(order)} pages discovered, {written} files written, {skipped} skipped in {out_dir}")
@@ -381,32 +460,30 @@ def export_doc(args: argparse.Namespace, doc_id: str, token: str) -> None:
 
     out_dir = Path(args.out_dir or f"coda-export-{doc_id}")
 
-    total_written = 0
-    total_skipped = 0
-    total_discovered = 0
-
+    combined_order: list[str] = []
+    combined_parent: dict[str, str | None] = {}
     for root_id in root_ids:
         order, parent = _build_subtree_order(root_id, page_by_id)
-        total_discovered += len(order)
+        combined_order.extend(order)
+        combined_parent.update(parent)
 
-        written, skipped = _export_pages(
-            doc_id=doc_id,
-            token=token,
-            pages=pages,
-            order=order,
-            parent_map=parent,
-            page_by_id=page_by_id,
-            out_dir=out_dir,
-            overwrite=args.overwrite,
-            timeout=args.timeout,
-            retries=args.retries,
-        )
-        total_written += written
-        total_skipped += skipped
+    total_discovered = len(combined_order)
+    total_written, total_skipped = _export_pages(
+        doc_id=doc_id,
+        token=token,
+        order=combined_order,
+        parent_map=combined_parent,
+        page_by_id=page_by_id,
+        out_dir=out_dir,
+        overwrite=args.overwrite,
+        timeout=args.timeout,
+        retries=args.retries,
+        scope="doc",
+    )
 
     print(f"\nExport complete: {total_discovered} pages discovered, {total_written} files written, {total_skipped} skipped in {out_dir}")
     if total_skipped:
-        print(f"Re-run with --overwrite to replace existing files.")
+        print("Unchanged pages were skipped. Re-run with --overwrite to replace all files.")
 
 
 def validate_auth(args: argparse.Namespace, doc_id: str, token: str) -> None:

@@ -2,6 +2,8 @@
 
 Use this skill to export content from a Coda doc to local Markdown files.
 
+It also maintains a local export index so repeat exports only update new or changed pages when the output directory already exists.
+
 ## What you need
 
 - a Coda API token
@@ -56,6 +58,14 @@ export CODA_API_TOKEN="your-api-token"
 ## Known limitations
 
 - Tables are not exported by the API into the generated Markdown files.
+- Checklists are not exported in the correct Markdown checklist format.
+
+## Incremental updates
+
+- The exporter keeps a local index file named `.coda-export-index.json` inside the export directory.
+- On later runs, if the directory already exists, it compares each page's Coda `updatedAt` timestamp with the saved index.
+- Only new or updated pages are re-exported.
+- Use `--overwrite` if you want to force a full rewrite.
 
 ## Notes
 

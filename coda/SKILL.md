@@ -7,6 +7,8 @@ description: Export Coda document pages to local Markdown files. Use when a user
 
 Export Coda pages and their descendants into local Markdown files using `scripts/coda_export.py`.
 
+The exporter maintains a local `.coda-export-index.json` file in the output directory. If that directory already exists, re-runs should update only new pages and pages whose Coda `updatedAt` timestamp changed, instead of rewriting everything.
+
 ## Prerequisites
 
 - Python 3.9+
@@ -121,11 +123,16 @@ With custom output directory:
 python scripts/coda_export.py export-subtree --root-page-id <PAGE_ID> --out-dir <DIR>
 ```
 
-### Overwrite behavior
+### Incremental update behavior
 
-By default, existing files are **skipped** with a notice. A summary at the end shows how many were skipped.
+By default, the exporter maintains `.coda-export-index.json` in the output directory and uses it to detect unchanged pages.
 
-To overwrite existing files:
+If the output directory already exists:
+- new pages are exported
+- pages updated in Coda after the last export are re-exported
+- unchanged pages are skipped
+
+To force a full rewrite:
 
 ```bash
 python scripts/coda_export.py export-doc --overwrite
