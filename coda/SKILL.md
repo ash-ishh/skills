@@ -12,6 +12,10 @@ Export Coda pages and their descendants into local Markdown files using `scripts
 - Python 3.9+
 - A Coda API token and doc ID
 
+## Credential Handling
+
+Before asking the user for Coda credentials, first check whether they already exist in local env files such as `.env`, `.env.local`, or similar project env files. If the values are present there, use them instead of asking again.
+
 ## Getting Coda API Credentials
 
 ### API Token
@@ -32,6 +36,8 @@ https://coda.io/d/Your-Doc-Name_d<DOC_ID>
 For example, in `https://coda.io/d/My-Notes_dAbCdEfGhI`, the doc ID is `AbCdEfGhI`.
 
 ### Setting Environment Variables
+
+If the values are already present in a local `.env` file, prefer using those instead of asking the user to re-enter them.
 
 ```bash
 export CODA_DOC_ID="your-doc-id"
