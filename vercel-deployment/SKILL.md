@@ -1,0 +1,214 @@
+---
+name: vercel-deployment
+description: Deploy and troubleshoot projects on Vercel in a repo-agnostic way. Use when setting up Vercel projects, connecting Git repos, configuring framework/root directory/build settings, syncing environment variables, adding domains, triggering deployments, or debugging Vercel build/runtime failures.
+---
+
+# Vercel Deployment
+
+Use this skill to deploy any Git-backed project to Vercel without assuming a specific repository layout, framework, team, domain, or environment file location.
+
+## Core principle
+
+Discover project settings from the current repo before running Vercel commands. Do not hard-code paths like `apps/web`, frameworks like `nextjs`, branches like `main`, team scopes, domains, or env file names unless the user or repository configuration confirms them.
+
+## 1) Discover the project
+
+From the repository root, inspect the app before deploying:
+
+```bash
+pwd
+git remote -v
+git branch --show-current
+find . -maxdepth 3 \( -name package.json -o -name vercel.json -o -name next.config.* -o -name vite.config.* -o -name astro.config.* -o -name svelte.config.* -o -name nuxt.config.* \) -print
+```
+
+Identify:
+
+- repository URL and provider
+- project name
+- intended app/root directory (`.` for single app repos, a subdirectory for monorepos)
+- framework preset, if any
+- build command, output directory, install command, and development command if the defaults are not enough
+- production branch
+- target Vercel scope/team
+- required environment variables and domains
+
+If multiple apps are present, ask which app should be deployed.
+
+## 2) Verify Vercel auth and scope
+
+```bash
+vercel whoami
+vercel teams ls
+```
+
+If deploying under a team, pass `--scope <team-slug>` on all relevant commands. If using a personal account, omit `--scope`.
+
+## 3) Create or link the Vercel project
+
+Prefer running commands from the repository root and using `--cwd <root-directory>` only when needed.
+
+```bash
+vercel project add <project-name> [--scope <team-slug>]
+vercel link [--project <project-name>] [--scope <team-slug>] [--cwd <root-directory>]
+```
+
+For Git-backed deployments, connect the repo if it is not already connected:
+
+```bash
+vercel git connect <repo-url> [--scope <team-slug>] [--cwd <root-directory>]
+```
+
+## 4) Configure project settings explicitly when defaults are wrong
+
+Vercel auto-detection can be wrong in monorepos or non-standard layouts. Inspect first:
+
+```bash
+vercel project inspect <project-name> [--scope <team-slug>]
+vercel api /v9/projects/<project-name> [--scope <team-slug>] --raw
+```
+
+Patch only the settings that need to be corrected. Example payload:
+
+```bash
+cat > /tmp/vercel-project-patch.json <<'JSON'
+{
+  "framework": "<framework-or-null>",
+  "rootDirectory": "<root-directory>",
+  "buildCommand": "<build-command-or-null>",
+  "outputDirectory": "<output-directory-or-null>",
+  "installCommand": "<install-command-or-null>",
+  "devCommand": "<dev-command-or-null>"
+}
+JSON
+
+vercel api /v9/projects/<project-name> \
+  [--scope <team-slug>] \
+  -X PATCH \
+  --input /tmp/vercel-project-patch.json \
+  --raw
+```
+
+Remove keys that are unknown or should use Vercel defaults. Do not send placeholder values.
+
+Common framework values include `nextjs`, `vite`, `sveltekit`, `astro`, `nuxtjs`, `remix`, and `other`. Confirm the exact value supported by the current Vercel API/CLI before patching.
+
+## 5) Environment variables
+
+Find the repo's env examples and local env files:
+
+```bash
+find . -maxdepth 4 \( -name '.env' -o -name '.env.*' -o -name '*env.example' -o -name '*env.sample' \) -print
+```
+
+Rules:
+
+- Never print secrets in chat or logs.
+- Prefer env example files to determine required keys.
+- Use local env files only as secret sources when the user authorizes it.
+- Sync each required key to the correct Vercel targets: `production`, `preview`, and/or `development`.
+- If a variable already exists, use `vercel env update` rather than duplicating it.
+
+Useful commands:
+
+```bash
+vercel env list [production|preview|development] [--scope <team-slug>] [--cwd <root-directory>]
+vercel env add <KEY> <target> [--scope <team-slug>] [--cwd <root-directory>]
+vercel env update <KEY> <target> [--scope <team-slug>] [--cwd <root-directory>]
+vercel api /v10/projects/<project-name>/env?target=<target> [--scope <team-slug>] --raw
+```
+
+If project metadata exposes a generated project ID that the app needs, add it only when the app explicitly requires it.
+
+## 6) Domains
+
+Add domains only after confirming the desired hostnames with the user or repo documentation.
+
+```bash
+cat > /tmp/vercel-domain.json <<'JSON'
+{"name":"<domain>"}
+JSON
+
+vercel api /v10/projects/<project-name>/domains \
+  [--scope <team-slug>] \
+  -X POST \
+  --input /tmp/vercel-domain.json \
+  --raw
+
+vercel api /v9/projects/<project-name>/domains [--scope <team-slug>] --raw
+```
+
+Check DNS verification instructions from Vercel before declaring the domain complete.
+
+## 7) Trigger deployment
+
+Use the simplest valid deployment path first:
+
+```bash
+vercel deploy [--prod] [--scope <team-slug>] [--cwd <root-directory>]
+```
+
+If CLI deployment has path or monorepo linking issues, create a Git-backed deployment via API:
+
+```bash
+cat > /tmp/vercel-deployment.json <<'JSON'
+{
+  "name": "<project-name>",
+  "target": "production",
+  "gitSource": {
+    "type": "github",
+    "repo": "<repo-name>",
+    "org": "<org-or-user>",
+    "ref": "<branch-or-sha>"
+  },
+  "project": "<project-id>"
+}
+JSON
+
+vercel api /v13/deployments \
+  [--scope <team-slug>] \
+  -X POST \
+  --input /tmp/vercel-deployment.json \
+  --raw
+```
+
+Adjust `gitSource.type` and fields for the connected Git provider. Do not assume GitHub.
+
+## 8) Monitor and debug
+
+```bash
+vercel inspect <deployment-id-or-url> [--scope <team-slug>]
+vercel inspect <deployment-id-or-url> [--scope <team-slug>] --logs
+vercel api /v13/deployments/<deployment-id> [--scope <team-slug>] --raw
+```
+
+Check:
+
+- build status / ready state
+- build logs
+- framework/root/build/output settings
+- missing or mis-scoped environment variables
+- unsupported Node/package manager versions
+- domain/DNS verification status
+
+## Common pitfalls
+
+- Assuming a monorepo app path instead of discovering it.
+- Assuming the framework preset instead of inspecting config files.
+- Running `vercel link` from a subdirectory and later deploying from a different directory.
+- Forgetting `--scope` for team projects.
+- Importing secrets from the wrong env file or target.
+- Treating a successful build as proof that runtime env vars are complete.
+- Adding domains before DNS ownership/verification is ready.
+
+## Minimal checklist
+
+- Discover repo, app root, framework, branch, scope, env requirements, and domains.
+- Verify Vercel login and team scope.
+- Create/link the project.
+- Connect the Git repository.
+- Inspect and patch Vercel project settings only where needed.
+- Sync required environment variables to the correct targets.
+- Add and verify domains if requested.
+- Deploy.
+- Inspect logs and raw deployment status until ready.
