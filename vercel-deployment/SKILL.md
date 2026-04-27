@@ -5,11 +5,13 @@ description: Deploy and troubleshoot projects on Vercel in a repo-agnostic way. 
 
 # Vercel Deployment
 
-Use this skill to deploy any Git-backed project to Vercel without assuming a specific repository layout, framework, team, domain, or environment file location.
+Use this skill to deploy, maintain, or troubleshoot Git-backed projects on Vercel without assuming a specific repository layout, framework, team, domain, or environment file location.
 
 ## Core principle
 
-Discover project settings from the current repo before running Vercel commands. Do not hard-code paths like `apps/web`, frameworks like `nextjs`, branches like `main`, team scopes, domains, or env file names unless the user or repository configuration confirms them.
+Discovery and confirmation come before creation or deployment. First determine whether the repo is already linked to an existing Vercel project or has prior deployments. If it is not already deployed/linked, do **not** create/link/deploy automatically. Ask the user to confirm that they want a new Vercel setup and clarify any ambiguous choices such as target org/account/team, project name, app/root directory, production branch, environment targets, and domain.
+
+Do not hard-code paths like `apps/web`, frameworks like `nextjs`, branches like `main`, team scopes, domains, or env file names unless the user or repository configuration confirms them.
 
 ## 1) Discover the project
 
@@ -35,25 +37,47 @@ Identify:
 
 If multiple apps are present, ask which app should be deployed.
 
-## 2) Verify Vercel auth and scope
+## 2) Verify Vercel auth, scope, and existing project state
 
 ```bash
 vercel whoami
 vercel teams ls
+find . -maxdepth 3 -path '*/.vercel/project.json' -print
+```
+
+If a `.vercel/project.json` exists, inspect it before acting:
+
+```bash
+cat .vercel/project.json
+vercel project inspect <project-name-or-id> [--scope <team-slug>]
 ```
 
 If deploying under a team, pass `--scope <team-slug>` on all relevant commands. If using a personal account, omit `--scope`.
 
-## 3) Create or link the Vercel project
+If the project is not already linked or the scope cannot be inferred, stop and ask for confirmation instead of guessing. Useful questions include:
+
+- Should I set this up as a new Vercel project, or only work with an existing one?
+- Which Vercel account/team/org should own it?
+- What project name should be used?
+- Which app/root directory should be linked?
+- Which branch should be production?
+- Should I trigger a deployment now, or only configure/link the project?
+
+## 3) Create or link the Vercel project only after confirmation
 
 Prefer running commands from the repository root and using `--cwd <root-directory>` only when needed.
+
+Only run these commands when one of the following is true:
+
+- the repository is already linked to the intended Vercel project and scope, or
+- the user has explicitly confirmed a new setup and answered the necessary ownership/project/root-directory questions.
 
 ```bash
 vercel project add <project-name> [--scope <team-slug>]
 vercel link [--project <project-name>] [--scope <team-slug>] [--cwd <root-directory>]
 ```
 
-For Git-backed deployments, connect the repo if it is not already connected:
+For Git-backed deployments, connect the repo only if it is not already connected and the user has confirmed the target account/team/project:
 
 ```bash
 vercel git connect <repo-url> [--scope <team-slug>] [--cwd <root-directory>]
@@ -142,6 +166,8 @@ Check DNS verification instructions from Vercel before declaring the domain comp
 
 ## 7) Trigger deployment
 
+Only trigger a deployment when the project is already linked/deployed or the user has explicitly asked to deploy after confirming the Vercel account/team/project/root-directory choices. If no existing Vercel project/deployment is found, ask before deploying.
+
 Use the simplest valid deployment path first:
 
 ```bash
@@ -193,6 +219,7 @@ Check:
 
 ## Common pitfalls
 
+- Creating, linking, or deploying a new Vercel project when the repo was not already deployed and the user has not confirmed the target account/team/project.
 - Assuming a monorepo app path instead of discovering it.
 - Assuming the framework preset instead of inspecting config files.
 - Running `vercel link` from a subdirectory and later deploying from a different directory.
@@ -204,9 +231,10 @@ Check:
 ## Minimal checklist
 
 - Discover repo, app root, framework, branch, scope, env requirements, and domains.
-- Verify Vercel login and team scope.
-- Create/link the project.
-- Connect the Git repository.
+- Verify Vercel login, team scope, and whether the repo is already linked/deployed.
+- If not already linked/deployed, ask before creating, linking, connecting Git, or deploying.
+- Create/link the project only after confirmation.
+- Connect the Git repository only after confirmation.
 - Inspect and patch Vercel project settings only where needed.
 - Sync required environment variables to the correct targets.
 - Add and verify domains if requested.
