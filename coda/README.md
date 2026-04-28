@@ -57,8 +57,11 @@ export CODA_API_TOKEN="your-api-token"
 
 ## Known limitations
 
-- Tables are not exported by the API into the generated Markdown files.
-- Checklists are not exported in the correct Markdown checklist format.
+The exporter uses Coda's dedicated page Markdown export endpoint, which has better fidelity than the structured page content endpoint previously used by this skill.
+
+- Checklists are exported in Markdown checklist format (for example, `- [ ] item`; checked-item fidelity depends on Coda's Markdown export output).
+- Simple/inline page tables can be exported as Markdown tables.
+- Coda tables are separate objects; for the most reliable underlying table data, export each table separately via Coda's UI or the Tables/Rows API and merge it into your pipeline.
 - Images are not fetched and embedded into the exported Markdown files.
 
 ## Incremental updates

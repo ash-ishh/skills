@@ -148,6 +148,22 @@ python scripts/coda_export.py export-subtree --root-page-id <PAGE_ID> --overwrit
 - Filenames include page IDs to avoid collisions
 - Final summary: pages discovered, files written, files skipped
 
+## Export implementation
+
+The exporter uses Coda's dedicated Markdown page export flow:
+
+1. `POST /apis/v1/docs/{docId}/pages/{pageId}/export` with `outputFormat = "markdown"`
+2. Poll `GET /apis/v1/docs/{docId}/pages/{pageId}/export/{exportId}`
+3. Download the returned `downloadLink`
+
+This has better Markdown fidelity for checklists and simple/inline tables than Coda's structured page content endpoint.
+
+## Known limitations
+
+- Coda tables are separate objects; for reliable raw table data, export each table via Coda's UI or the Tables/Rows API and merge that data into your output pipeline.
+- Images are not fetched and embedded into the generated Markdown files.
+- Checked-item fidelity in Markdown checklists depends on Coda's page export output.
+
 ## Notes
 
 - The script retries transient API/network failures automatically (configurable via `--retries`, default 6).

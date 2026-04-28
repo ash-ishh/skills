@@ -15,6 +15,7 @@ Environment fallback (defaults, configurable via --doc-id-env / --token-env):
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import os
 import re
@@ -65,6 +66,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=6,
         help="Number of retry attempts for transient failures (default: 6)",
+    )
+    parser.add_argument(
+        "--export-poll-interval",
+        type=float,
+        default=2.0,
+        help="Seconds between page export status polls (default: 2.0)",
+    )
+    parser.add_argument(
+        "--export-timeout",
+        type=int,
+        default=180,
+        help="Maximum seconds to wait for each page export (default: 180)",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -138,22 +151,38 @@ def resolve_auth(args: argparse.Namespace) -> tuple[str, str]:
     return doc_id, token
 
 
-def get_json(url: str, token: str, timeout: int, retries: int) -> dict[str, Any]:
+def request_json(
+    url: str,
+    token: str,
+    timeout: int,
+    retries: int,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    transient_statuses: set[int] | None = None,
+) -> dict[str, Any]:
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
         "User-Agent": "coda-export-script/1.0",
     }
+    body: bytes | None = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(payload).encode("utf-8")
+
     backoff = 1.0
 
     for attempt in range(1, retries + 1):
-        req = Request(url=url, headers=headers, method="GET")
+        req = Request(url=url, headers=headers, data=body, method=method)
         try:
             with urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except HTTPError as err:
             status = getattr(err, "code", None)
-            transient = status in (429, 500, 502, 503, 504)
+            retryable_statuses = {429, 500, 502, 503, 504}
+            if transient_statuses:
+                retryable_statuses.update(transient_statuses)
+            transient = status in retryable_statuses
             if transient and attempt < retries:
                 time.sleep(backoff)
                 backoff *= 2
@@ -175,6 +204,10 @@ def get_json(url: str, token: str, timeout: int, retries: int) -> dict[str, Any]
     raise SystemExit(f"Failed after {retries} attempts: {url}")
 
 
+def get_json(url: str, token: str, timeout: int, retries: int) -> dict[str, Any]:
+    return request_json(url=url, token=token, timeout=timeout, retries=retries)
+
+
 def fetch_all_pages(doc_id: str, token: str, timeout: int, retries: int) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     query = urlencode({"limit": 500})
@@ -192,27 +225,6 @@ def sanitize_name(name: str) -> str:
     return s or "Untitled"
 
 
-def item_to_markdown(style: str, text: str, ordered_index: int | None) -> str:
-    text = text or ""
-    if style == "h1":
-        return f"# {text}"
-    if style == "h2":
-        return f"## {text}"
-    if style == "h3":
-        return f"### {text}"
-    if style == "bulletedList":
-        return f"- {text}"
-    if style == "numberedList":
-        return f"{ordered_index or 1}. {text}"
-    if style == "checkboxList":
-        return f"- [ ] {text}"
-    if style == "blockQuote":
-        return f"> {text}"
-    if style == "code":
-        return f"```\n{text}\n```"
-    return text
-
-
 def page_lineage(page_id: str, parent_map: dict[str, str | None]) -> list[str]:
     chain: list[str] = []
     cursor: str | None = page_id
@@ -223,16 +235,103 @@ def page_lineage(page_id: str, parent_map: dict[str, str | None]) -> list[str]:
     return chain
 
 
-def fetch_page_content(
+def _export_id(data: dict[str, Any]) -> str | None:
+    for key in ("id", "exportId", "requestId"):
+        value = data.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def download_text(url: str, token: str, timeout: int, retries: int) -> str:
+    headers = {
+        "Accept": "text/markdown,text/plain,*/*",
+        "User-Agent": "coda-export-script/1.0",
+    }
+    if "/apis/" in url or "coda.io" in url:
+        headers["Authorization"] = f"Bearer {token}"
+    backoff = 1.0
+
+    for attempt in range(1, retries + 1):
+        req = Request(url=url, headers=headers, method="GET")
+        try:
+            with urlopen(req, timeout=timeout) as resp:
+                data = resp.read()
+                if resp.headers.get("Content-Encoding", "").lower() == "gzip" or data.startswith(b"\x1f\x8b"):
+                    data = gzip.decompress(data)
+                return data.decode("utf-8", errors="replace")
+        except HTTPError as err:
+            status = getattr(err, "code", None)
+            transient = status in (429, 500, 502, 503, 504)
+            if transient and attempt < retries:
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            details = ""
+            try:
+                details = err.read().decode("utf-8", errors="replace")
+            except Exception:
+                details = ""
+            raise SystemExit(f"HTTP error {status} downloading {url}\n{details}") from err
+        except URLError as err:
+            if attempt < retries:
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            raise SystemExit(f"Network error downloading {url}: {err}") from err
+
+    raise SystemExit(f"Failed after {retries} attempts downloading: {url}")
+
+
+def fetch_page_export_markdown(
     doc_id: str,
     token: str,
     page_id: str,
     timeout: int,
     retries: int,
-) -> list[dict[str, Any]]:
-    url = f"{BASE_URL}/docs/{doc_id}/pages/{page_id}/content"
-    data = get_json(url=url, token=token, timeout=timeout, retries=retries)
-    return data.get("items", [])
+    poll_interval: float,
+    export_timeout: int,
+) -> str:
+    start_url = f"{BASE_URL}/docs/{doc_id}/pages/{page_id}/export"
+    start_data = request_json(
+        url=start_url,
+        token=token,
+        timeout=timeout,
+        retries=retries,
+        method="POST",
+        payload={"outputFormat": "markdown"},
+    )
+
+    export_id = _export_id(start_data)
+    if not export_id:
+        raise SystemExit(f"Coda did not return an export ID for page {page_id}: {start_data}")
+
+    status_url = start_data.get("href") or f"{BASE_URL}/docs/{doc_id}/pages/{page_id}/export/{export_id}"
+    deadline = time.monotonic() + export_timeout
+    last_data = start_data
+    time.sleep(max(0.1, poll_interval))
+
+    while time.monotonic() <= deadline:
+        data = request_json(
+            url=status_url,
+            token=token,
+            timeout=timeout,
+            retries=retries,
+            transient_statuses={404},
+        )
+        last_data = data
+        status = str(data.get("status", "")).lower()
+        download_link = data.get("downloadLink")
+
+        if isinstance(download_link, str) and download_link and status not in {"failed", "error", "canceled", "cancelled"}:
+            return download_text(url=download_link, token=token, timeout=timeout, retries=retries)
+
+        if status in {"failed", "error", "canceled", "cancelled"}:
+            raise SystemExit(f"Coda page export failed for {page_id}: {data}")
+
+        time.sleep(max(0.1, poll_interval))
+
+    raise SystemExit(f"Timed out waiting for Coda page export for {page_id}: {last_data}")
 
 
 def utc_now_iso() -> str:
@@ -282,6 +381,8 @@ def _export_pages(
     timeout: int,
     retries: int,
     scope: str,
+    export_poll_interval: float,
+    export_timeout: int,
     root_page_id: str | None = None,
 ) -> tuple[int, int]:
     """Core export loop. Returns (written_count, skipped_count)."""
@@ -294,6 +395,7 @@ def _export_pages(
         "scope": scope,
         "rootPageId": root_page_id,
         "updatedAt": now,
+        "contentSource": "page-export",
     })
 
     written = 0
@@ -321,6 +423,7 @@ def _export_pages(
             not overwrite
             and file_path.exists()
             and old_entry.get("updatedAt") == page_updated_at
+            and old_entry.get("contentSource") == "page-export"
             and old_path == relative_path
         )
         if unchanged:
@@ -333,36 +436,15 @@ def _export_pages(
             if old_file.exists() and old_file != file_path:
                 old_file.unlink()
 
-        items = fetch_page_content(
+        body = fetch_page_export_markdown(
             doc_id=doc_id,
             token=token,
             page_id=page_id,
             timeout=timeout,
             retries=retries,
-        )
-
-        lines: list[str] = []
-        ordered_index = 0
-
-        for item in items:
-            item_content = item.get("itemContent") or {}
-            style = item_content.get("style", "paragraph")
-            text = item_content.get("content", "")
-
-            if style == "numberedList":
-                ordered_index += 1
-            else:
-                ordered_index = 0
-
-            lines.append(
-                item_to_markdown(
-                    style=style,
-                    text=text,
-                    ordered_index=(ordered_index if style == "numberedList" else None),
-                )
-            )
-
-        body = "\n\n".join(lines).strip()
+            poll_interval=export_poll_interval,
+            export_timeout=export_timeout,
+        ).strip()
         header = (
             f"# {page_name}\n\n"
             f"- Page ID: `{page_id}`\n"
@@ -377,6 +459,7 @@ def _export_pages(
             "browserLink": browser_link,
             "updatedAt": page_updated_at,
             "exportedAt": now,
+            "contentSource": "page-export",
         }
         written += 1
         print(f"[{idx}/{len(order)}] {file_path}")
@@ -447,6 +530,8 @@ def export_subtree(args: argparse.Namespace, doc_id: str, token: str) -> None:
         timeout=args.timeout,
         retries=args.retries,
         scope="subtree",
+        export_poll_interval=args.export_poll_interval,
+        export_timeout=args.export_timeout,
         root_page_id=root_page_id,
     )
 
@@ -492,6 +577,8 @@ def export_doc(args: argparse.Namespace, doc_id: str, token: str) -> None:
         timeout=args.timeout,
         retries=args.retries,
         scope="doc",
+        export_poll_interval=args.export_poll_interval,
+        export_timeout=args.export_timeout,
     )
 
     print(f"\nExport complete: {total_discovered} pages discovered, {total_written} files written, {total_skipped} skipped in {out_dir}")
